@@ -47,9 +47,15 @@ class ShellCommand(base.Change):
         self.stdin = stdin
         self.cwd = cwd
 
-        self.env = {
-            "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-        }
+        self.env = {}
+        if platform.platform == "win32":
+            self.env.update({
+                "PATH": os.environ.get("PATH", ""),
+            })
+        else:
+            self.env.update({
+                "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            })
         if env:
             self.env.update(env)
 
@@ -75,7 +81,7 @@ class ShellCommand(base.Change):
         elif command[0].startswith("/"):
             return platform.exists(command[0])
 
-        for path in self.env["PATH"].split(os.pathsep):
+        for path in self.env["PATH"].split(platform.pathsep):
             if platform.exists(os.path.join(path, command[0])):
                 return True
 
@@ -87,13 +93,13 @@ class ShellCommand(base.Change):
         if not self.command_exists(command):
             ctx.raise_or_log(error.BinaryMissing("Command '%s' not found" % command[0]))
 
-        if self.user:
+        if platform.getpwnam and self.user:
             try:
                 platform.getpwnam(self.user)
             except KeyError:
                 ctx.raise_or_log(error.InvalidUser("User '%s' not found" % self.user))
 
-        if self.group:
+        if platform.getgrnam and self.group:
             try:
                 platform.getgrnam(self.group)
             except KeyError:

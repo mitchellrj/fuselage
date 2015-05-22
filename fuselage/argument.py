@@ -14,7 +14,6 @@
 
 import six
 import sys
-from abc import ABCMeta, abstractmethod
 import random
 
 from fuselage import error
@@ -27,7 +26,6 @@ class Argument(object):
     neater ways of doing this that do not involve passing extra arguments to
     Argument are welcome. """
 
-    metaclass = ABCMeta
     argument_id = 0
     default = None
 
@@ -40,25 +38,40 @@ class Argument(object):
     def __get__(self, instance, owner):
         if instance is None:
             return self
+        return self.get(instance)
+
+    def get(self, instance):
+        if instance is None:
+            return self
         elif self.present(instance):
-            return getattr(instance, self.arg_id)
-        elif callable(self.default):
-            return self.default(instance)
+            return self.get_raw(instance)
         else:
-            return self.default
+            return self.get_default(instance)
+
+    def get_default(self, instance):
+        if callable(self.default):
+            return self.default(instance)
+        return self.default
+
+    def get_raw(self, instance):
+        return getattr(instance, self.arg_id)
 
     def present(self, instance):
         return hasattr(instance, self.arg_id)
 
     def serialize(self, instance, builder=None):
-        if hasattr(instance, self.arg_id):
-            return getattr(instance, self.arg_id)
-        else:
-            return self.default
+        return self.get(instance)
 
-    @abstractmethod
+    def clean(self, instance, value):
+        return value
+
     def __set__(self, instance, value):
         """ Set the property. The value will be a UTF-8 encoded string read from the yaml source file. """
+        value = self.clean(instance, value)
+        self.save(instance, value)
+
+    def save(self, instance, value):
+        setattr(instance, self.arg_id, value)
 
 
 class Boolean(Argument):
@@ -66,7 +79,7 @@ class Boolean(Argument):
     """ Represents a boolean. "1", "yes", "on" and "true" are all considered
     to be True boolean values. Anything else is False. """
 
-    def __set__(self, instance, value):
+    def clean(self, instance, value):
         if isinstance(value, six.text_type):
             if value.lower() in ("1", "yes", "on", "true"):
                 value = True
@@ -74,7 +87,7 @@ class Boolean(Argument):
                 value = False
         else:
             value = bool(value)
-        setattr(instance, self.arg_id, value)
+        return value
 
     @classmethod
     def _generate_valid(self):
@@ -85,10 +98,10 @@ class String(Argument):
 
     """ Represents a string. """
 
-    def __set__(self, instance, value):
+    def clean(self, instance, value):
         if value is not None:
             value = force_str(value)
-        setattr(instance, self.arg_id, value)
+        return value
 
     @classmethod
     def _generate_valid(self):
@@ -120,10 +133,8 @@ class FullPath(String):
     """ Represents a full path on the filesystem. This should start with a
     '/'. """
 
-    def __set__(self, instance, value):
-        if not value.startswith("/"):
-            raise error.ParseError("%s is not a full path" % value)
-        super(FullPath, self).__set__(instance, value)
+    def clean(self, instance, value):
+        return super(FullPath, self).clean(instance, value)
 
     @classmethod
     def _generate_valid(self):
@@ -136,13 +147,13 @@ class Integer(Argument):
     throw an :py:exc:error.ParseError if the passed in value cannot represent
     a base-10 integer. """
 
-    def __set__(self, instance, value):
+    def clean(self, instance, value):
         if not isinstance(value, int):
             try:
                 value = int(value)
             except ValueError:
                 raise error.ParseError("%s is not an integer" % value)
-        setattr(instance, self.arg_id, value)
+        return value
 
     @classmethod
     def _generate_valid(self):
@@ -153,15 +164,13 @@ class Octal(Integer):
 
     """ An octal integer.  This is specifically used for file permission modes. """
 
-    def __set__(self, instance, value):
+    def clean(self, instance, value):
         if not isinstance(value, int):
             value = int(value, 8)
-        setattr(instance, self.arg_id, value)
+        return value
 
 
 class Dict(Argument):
-    def __set__(self, instance, value):
-        setattr(instance, self.arg_id, value)
 
     @classmethod
     def _generate_valid(self):
@@ -169,8 +178,6 @@ class Dict(Argument):
 
 
 class List(Argument):
-    def __set__(self, instance, value):
-        setattr(instance, self.arg_id, value)
 
     @classmethod
     def _generate_valid(self):
@@ -179,18 +186,16 @@ class List(Argument):
 
 class File(Argument):
 
-    def __set__(self, instance, value):
-        setattr(instance, self.arg_id, value)
-
     def _generate_valid(self):
         return '/tmp/foo'
 
     def serialize(self, instance, builder=None):
         assert builder
-        if not hasattr(instance, self.arg_id):
-            return self.default
+        if not self.present(instance):
+            return self.get_default(instance)
 
-        with open(getattr(instance, self.arg_id), "rb") as fp:
+        filename = self.get_raw(instance)
+        with open(filename, "rb") as fp:
             return builder.add_resource_blob(fp.read())
 
 
@@ -216,16 +221,20 @@ class SubscriptionArgument(Argument):
 
     """ Parses the policy: argument for resources, including triggers etc. """
 
-    def __set__(self, instance, value):
+    def clean(self, instance, value):
         triggers = []
         for resource in value:
-            triggers.append(PolicyTrigger(resource))
-        setattr(instance, self.arg_id, triggers)
+            if isinstance(resource, PolicyTrigger):
+                trigger = resource
+            else:
+                trigger = PolicyTrigger(resource)
+            triggers.append(trigger)
+        return triggers
 
     def serialize(self, instance, builder=None):
-        if not hasattr(instance, self.arg_id):
+        if not self.present(instance):
             return
-        value = getattr(instance, self.arg_id)
+        value = self.get_raw(instance)
         policy = []
         for t in value:
             policy.append(t.on)
@@ -239,20 +248,21 @@ class PolicyArgument(Argument):
 
     """ Parses the policy: argument for resources, including triggers etc. """
 
-    def __set__(self, instance, value):
+    def clean(self, instance, value):
         """ Set either a default policy or a set of triggers on the policy collection """
         try:
-            setattr(instance, self.arg_id, instance.policies[value](instance))
+            value = instance.policies[value](instance)
         except KeyError:
             raise error.ParseError("'%s' is not a valid policy for this resource" % (value, ))
+        return value
 
-    def default(self, instance):
+    def get_default(self, instance):
         return instance.policies.default()(instance)
 
     def serialize(self, instance, builder=None):
-        if not hasattr(instance, self.arg_id):
+        if not self.present(instance):
             return
-        return getattr(instance, self.arg_id).name
+        return self.get_raw(instance).name
 
     def _generate_valid(self):
         return "invalid-policy"

@@ -18,12 +18,20 @@ from fuselage import error, resources, provider, platform
 from fuselage.changes import EnsureDirectory, ShellCommand
 
 
+def dirname(p):
+    i = p.rfind('/') + 1
+    head = p[:i]
+    if head and head != '/' * len(head):
+        head = head.rstrip('/')
+    return head
+
+
 class Directory(provider.Provider):
 
     policies = (resources.directory.DirectoryAppliedPolicy,)
 
     def check_path(self, directory):
-        if os.path.isdir(directory):
+        if platform.isdir(directory):
             return
 
         frags = directory.split("/")
@@ -40,7 +48,11 @@ class Directory(provider.Provider):
     def apply(self):
         name = self.resource.name
 
-        self.check_path(os.path.dirname(name))
+        # FIXME: This should use os.path.name - but then what about tests that
+        # rely on posix behaviour?
+        # Need to mark those as skipped on nt and implement tests that exercise
+        # simple behaviour on posix and nt
+        self.check_path(dirname(name))
 
         return self.change(EnsureDirectory(
             name,

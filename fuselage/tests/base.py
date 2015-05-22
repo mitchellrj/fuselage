@@ -20,8 +20,19 @@ import shlex
 import mock
 import fakechroot
 
+try:
+    from unittest import skipIf
+except ImportError:
+    from unittest2 import skipIf
+
 from fuselage import bundle, runner, error, platform, log
 from .recorder import Player, Recorder
+
+
+__all__ = [
+    'skipIf',
+    'TestCaseWithBundle',
+]
 
 
 logger = logging.getLogger()
@@ -42,6 +53,64 @@ class TestCaseWithBundle(unittest.TestCase):
 
     def setUp(self):
         self.bundle = bundle.ResourceBundle()
+
+
+class TestCaseWithRealRunner(TestCaseWithBundle):
+
+    def setUp(self):
+        super(TestCaseWithRealRunner, self).setUp()
+        log.configure(verbosity=logging.DEBUG, force=True)
+        self.logger = logging.getLogger(__name__)
+
+    def failUnlessExists(self, path):
+        if not platform.exists(path):
+            self.fail("Path '%s' does not exist" % path)
+
+    def failIfExists(self, path):
+        if platform.exists(path):
+            self.fail("Path '%s' exists" % path)
+
+    def apply(self, simulate=False):
+        r = runner.Runner(
+            self.bundle,
+            simulate=simulate,
+            state_path=os.path.join(os.getcwd(), ".fuselage-test-state"),
+        )
+        return r.run()
+
+    def check_apply(self):
+        logger.debug("Simulating bundle apply")
+        self.apply(simulate=True)
+
+        logger.debug("Applying bundle")
+        try:
+            self.apply(simulate=False)
+        except error.NothingChanged:
+            self.fail("Their were no pending changes after simulate")
+
+        logger.debug("Applying bundle again to check for idempotency")
+        try:
+            self.apply(simulate=False)
+        except error.NothingChanged:
+            return
+        else:
+            self.fail("After 2nd apply() their were still pending changes")
+
+
+class Patch(object):
+
+    def __init__(self, module, param, value):
+        self.module = module
+        self.param = param
+        self.value = value
+
+    def start(self):
+        self.old_value = getattr(self.module, self.param)
+        setattr(self.module, self.param, self.value)
+        return self
+
+    def stop(self):
+        setattr(self.module, self.param, self.old_value)
 
 
 class TestCaseWithRunner(TestCaseWithBundle):
@@ -65,7 +134,10 @@ class TestCaseWithRunner(TestCaseWithBundle):
             self.chroot = mock.Mock()
             self.cassette = Player(path, id)
 
-        self.patches = []
+        self.patches = [
+            Patch(platform, "platform", "posix").start(),
+            Patch(platform, "pathsep", ":").start(),
+        ]
 
         def patch(name, fn):
             self.cassette.register(name, fn)

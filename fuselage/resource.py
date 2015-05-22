@@ -144,7 +144,10 @@ class Resource(six.with_metaclass(ResourceType)):
         self.policy.get_provider()
 
         if not self.id:
-            raise error.ParseError("Resource is not explicitly named and name cannot be implied")
+            raise error.ParseError((
+                "{0} is not explicitly named and name cannot be implied").format(
+                    self.__resource_name__
+            ))
 
     @classmethod
     def get_argument_names(klass):
@@ -157,7 +160,7 @@ class Resource(six.with_metaclass(ResourceType)):
         dictionary will be None. """
         retval = {}
         for name, arg in self.__args__.items():
-            if hasattr(self, arg.arg_id):
+            if arg.present(self):
                 retval[name] = arg.serialize(self, builder=builder)
         return {self.__resource_name__: retval}
 
